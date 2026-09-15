@@ -31,10 +31,11 @@ public class SettlementService {
 
     @Autowired private AccountRepository accounts;
     @Autowired private TransactionRepository transactions;
+    @Autowired private ReservationService reservationService;
 
     @Transactional
     public Transaction settle(PaymentInstruction instruction, String packetHash,
-                              String bridgeNodeId, int hopCount) {
+                              String bridgeNodeId, int hopCount, String packetId) {
 
         Account sender = accounts.findById(instruction.getSenderVpa())
                 .orElseThrow(() -> new IllegalArgumentException(
@@ -49,13 +50,14 @@ public class SettlementService {
             throw new IllegalArgumentException("Amount must be positive");
         }
 
-        if (sender.getBalance().compareTo(amount) < 0) {
-            log.warn("Insufficient balance: {} has ₹{}, tried to send ₹{}",
-                    sender.getVpa(), sender.getBalance(), amount);
+        if (sender.getAvailableBalance().compareTo(amount) < 0) {
+            log.warn("Insufficient available balance: {} has ₹{}, tried to send ₹{}",
+                    sender.getVpa(), sender.getAvailableBalance(), amount);
             return recordRejected(instruction, packetHash, bridgeNodeId, hopCount);
         }
 
         sender.setBalance(sender.getBalance().subtract(amount));
+        sender.setReservedBalance(sender.getReservedBalance().subtract(amount));
         receiver.setBalance(receiver.getBalance().add(amount));
         accounts.save(sender);
         accounts.save(receiver);

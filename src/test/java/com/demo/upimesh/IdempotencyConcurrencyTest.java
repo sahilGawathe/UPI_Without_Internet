@@ -81,6 +81,26 @@ class IdempotencyConcurrencyTest {
     }
 
     @Test
+    void secondPacketIsRejectedWhenAvailableBalanceIsConsumedByReservation() throws Exception {
+        var alice = accounts.findById("alice@demo").orElseThrow();
+        alice.setBalance(new BigDecimal("500.00"));
+        accounts.save(alice);
+
+        MeshPacket first = demoService.createPacket(
+                "alice@demo", "bob@demo", new BigDecimal("300.00"), "1234", 5);
+        assertNotNull(first);
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
+                demoService.createPacket(
+                        "alice@demo", "bob@demo", new BigDecimal("250.00"), "1234", 5));
+        assertTrue(ex.getMessage().contains("Insufficient available balance"));
+
+        BigDecimal aliceAfter = accounts.findById("alice@demo").orElseThrow().getBalance();
+        assertEquals(new BigDecimal("500.00"), aliceAfter,
+                "actual account balance should remain unchanged until the packet settles");
+    }
+
+    @Test
     void tamperedCiphertextIsRejected() throws Exception {
         MeshPacket packet = demoService.createPacket(
                 "alice@demo", "bob@demo", new BigDecimal("50.00"), "1234", 5);

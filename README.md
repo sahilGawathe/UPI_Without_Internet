@@ -27,13 +27,14 @@ This repo is the **server side** of that system, plus a software simulator of th
 
 ## What this demo proves
 
-The system shows three things working end to end:
+The system shows four things working end to end:
 
 1. **A payment can travel from sender to backend through untrusted intermediaries** without any of them being able to read or tamper with it. (Hybrid RSA + AES-GCM encryption.)
 2. **Even if the same payment reaches the backend simultaneously through multiple bridge nodes, it settles exactly once.** (Idempotency via atomic compare-and-set on the ciphertext hash.)
 3. **A tampered or replayed packet is rejected** before it touches the ledger.
+4. **A sender cannot double-spend while packets are still in flight.** The amount is reserved immediately when the packet is created, so other packets from the same sender are rejected before they ever enter the mesh.
 
-You'll see all three in the dashboard.
+You'll see all four in the dashboard.
 
 ---
 
@@ -93,9 +94,13 @@ Choose sender, receiver, amount, PIN. Click **"📤 Inject into Mesh"**.
 **What actually happens on the backend:**
 - The server pretends to be the sender's phone.
 - It builds a `PaymentInstruction` with a unique nonce and current timestamp.
-- It encrypts that with the server's RSA public key (using hybrid encryption — see below).
+- Before the packet is allowed into the mesh, it calls the reservation layer to hold the amount against the sender's account.
+- The reservation checks `availableBalance = balance - reservedBalance` and rejects the packet immediately if the sender cannot cover it.
+- If it passes, it encrypts the instruction with the server's RSA public key (using hybrid encryption — see below).
 - It wraps the ciphertext in a `MeshPacket` with a TTL of 5.
 - It hands the packet to `phone-alice`, an offline virtual device.
+
+This is the new guardrail that prevents the classic in-flight double-spend bug: a sender can no longer create two packets that both spend the same funds while they are still propagating through the mesh.
 
 You'll see `phone-alice` now holds 1 packet.
 
@@ -150,6 +155,11 @@ This test creates one packet, fires 3 threads at `BridgeIngestionService.ingest(
 │                         SENDER PHONE (offline)                          │
 │  PaymentInstruction { sender, receiver, amount, pinHash, nonce, time }  │
 │              │                                                          │
+│              ▼                                                          │
+│  ReservationService.reserve(packetId, sender, amount)                   │
+│  - checks available balance before packet enters the mesh               │
+│  - blocks double-spend while other packets are still in flight          │
+│              │                                                          │
 │              ▼ encrypt with server's RSA public key                     │
 │   MeshPacket { packetId, ttl, createdAt, ciphertext }                   │
 └──────────────────────────────────────┬──────────────────────────────────┘
@@ -183,12 +193,30 @@ This test creates one packet, fires 3 threads at `BridgeIngestionService.ingest(
 │  [5] SettlementService.settle()                                         │
 │       @Transactional: debit sender, credit receiver, write ledger       │
 │       @Version on Account = optimistic locking (defense in depth)       │
+│       │                                                                 │
+│       ▼                                                                 │
+│  release reservation after settlement or rejection                      │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## The three hard problems and how they're solved
+
+### Problem 0: In-flight double spend
+
+A sender creates two separate packets while the first one is still in the mesh. The first reaches the backend and settles; the second is later rejected. The user is still left with a bad experience, and the system is forced to discover the issue after the fact.
+
+**Solution: reservation at packet creation.**
+
+The sender's balance is reserved as soon as the packet is created. We track `balance - reservedBalance`, and a new packet is rejected before it ever enters the mesh if the sender cannot cover it after all current reservations.
+
+The reservation model is intentionally early in the lifecycle:
+- call `ReservationService.reserve(packetId, senderVpa, amount)` during packet creation
+- the sender's account is locked for that check to avoid race conditions
+- release the reservation only when the packet settles or is rejected
+
+This is the critical mechanism that prevents a double-spend from happening in the first place.
 
 ### Problem 1: Untrusted intermediates
 

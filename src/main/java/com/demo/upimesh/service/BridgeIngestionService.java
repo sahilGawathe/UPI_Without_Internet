@@ -32,6 +32,7 @@ public class BridgeIngestionService {
     @Autowired private HybridCryptoService crypto;
     @Autowired private IdempotencyService idempotency;
     @Autowired private SettlementService settlement;
+    @Autowired private ReservationService reservationService;
 
     @Value("${upi.mesh.packet-max-age-seconds:86400}")
     private long maxAgeSeconds;
@@ -42,6 +43,7 @@ public class BridgeIngestionService {
 
             // ---- Idempotency gate ----
             if (!idempotency.claim(packetHash)) {
+                reservationService.release(packet.getPacketId());
                 log.info("DUPLICATE packet {} from bridge {} — dropped",
                         packetHash.substring(0, 12) + "...", bridgeNodeId);
                 return IngestResult.duplicate(packetHash);
@@ -52,6 +54,7 @@ public class BridgeIngestionService {
             try {
                 instruction = crypto.decrypt(packet.getCiphertext());
             } catch (Exception e) {
+                reservationService.release(packet.getPacketId());
                 log.warn("Decryption failed for packet {}: {}",
                         packetHash.substring(0, 12) + "...", e.getMessage());
                 return IngestResult.invalid(packetHash, "decryption_failed");
@@ -60,17 +63,24 @@ public class BridgeIngestionService {
             // ---- Freshness check (replay protection) ----
             long ageSeconds = (Instant.now().toEpochMilli() - instruction.getSignedAt()) / 1000;
             if (ageSeconds > maxAgeSeconds) {
+                reservationService.release(packet.getPacketId());
                 log.warn("Packet {} too old ({}s), rejected",
                         packetHash.substring(0, 12) + "...", ageSeconds);
                 return IngestResult.invalid(packetHash, "stale_packet");
             }
             if (ageSeconds < -300) { // small clock-skew tolerance
+                reservationService.release(packet.getPacketId());
                 return IngestResult.invalid(packetHash, "future_dated");
             }
 
             // ---- Settle ----
-            Transaction tx = settlement.settle(instruction, packetHash, bridgeNodeId, hopCount);
-            return IngestResult.settled(packetHash, tx);
+            Transaction tx;
+            try {
+                tx = settlement.settle(instruction, packetHash, bridgeNodeId, hopCount, packet.getPacketId());
+                return IngestResult.settled(packetHash, tx);
+            } finally {
+                reservationService.release(packet.getPacketId());
+            }
 
         } catch (Exception e) {
             log.error("Ingestion error: {}", e.getMessage(), e);

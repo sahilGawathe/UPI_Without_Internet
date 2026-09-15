@@ -21,6 +21,9 @@ public class Account {
     @Column(nullable = false, precision = 19, scale = 2)
     private BigDecimal balance;
 
+    @Column(nullable = false, precision = 19, scale = 2)
+    private BigDecimal reservedBalance = BigDecimal.ZERO;
+
     @Version  // Optimistic locking — prevents lost updates on concurrent transfers
     private Long version;
 
@@ -40,6 +43,17 @@ public class Account {
 
     public BigDecimal getBalance() { return balance; }
     public void setBalance(BigDecimal balance) { this.balance = balance; }
+
+    public BigDecimal getReservedBalance() {
+        return reservedBalance == null ? BigDecimal.ZERO : reservedBalance;
+    }
+    public void setReservedBalance(BigDecimal reservedBalance) {
+        this.reservedBalance = reservedBalance == null ? BigDecimal.ZERO : reservedBalance;
+    }
+
+    public BigDecimal getAvailableBalance() {
+        return balance.subtract(getReservedBalance());
+    }
 
     public Long getVersion() { return version; }
     public void setVersion(Long version) { this.version = version; }

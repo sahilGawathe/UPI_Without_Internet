@@ -30,6 +30,7 @@ public class DemoService {
     @Autowired private AccountRepository accounts;
     @Autowired private HybridCryptoService crypto;
     @Autowired private ServerKeyHolder serverKey;
+    @Autowired private ReservationService reservationService;
 
     @PostConstruct
     public void seedAccounts() {
@@ -54,6 +55,10 @@ public class DemoService {
      */
     public MeshPacket createPacket(String senderVpa, String receiverVpa,
                                    BigDecimal amount, String pin, int ttl) throws Exception {
+        if (amount == null || amount.signum() <= 0) {
+            throw new IllegalArgumentException("Amount must be positive");
+        }
+
         PaymentInstruction instruction = new PaymentInstruction(
                 senderVpa,
                 receiverVpa,
@@ -63,14 +68,22 @@ public class DemoService {
                 Instant.now().toEpochMilli()        // signedAt — for freshness check
         );
 
-        String ciphertext = crypto.encrypt(instruction, serverKey.getPublicKey());
+        String packetId = UUID.randomUUID().toString();
+        reservationService.reserve(packetId, senderVpa, amount);
 
-        MeshPacket packet = new MeshPacket();
-        packet.setPacketId(UUID.randomUUID().toString());
-        packet.setTtl(ttl);
-        packet.setCreatedAt(Instant.now().toEpochMilli());
-        packet.setCiphertext(ciphertext);
-        return packet;
+        try {
+            String ciphertext = crypto.encrypt(instruction, serverKey.getPublicKey());
+
+            MeshPacket packet = new MeshPacket();
+            packet.setPacketId(packetId);
+            packet.setTtl(ttl);
+            packet.setCreatedAt(Instant.now().toEpochMilli());
+            packet.setCiphertext(ciphertext);
+            return packet;
+        } catch (Exception e) {
+            reservationService.release(packetId);
+            throw e;
+        }
     }
 
     private String sha256Hex(String input) throws Exception {
